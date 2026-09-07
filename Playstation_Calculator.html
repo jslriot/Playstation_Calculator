@@ -222,14 +222,14 @@
   <textarea id="input" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="DATE
 29/06/2018
 AMOUNT
-£19.99
+19.99
 DESCRIPTION
 Fortnite - 2,800 V-Bucks
 
 DATE
 29/06/2018
 AMOUNT
-+£19.99
++19.99
 DESCRIPTION
 Wallet funding
 
@@ -246,11 +246,11 @@ Wallet funding
     <div class="cards">
       <div class="card spend">
         <div class="label">Total spent</div>
-        <div class="value" id="totalSpent">£0.00</div>
+        <div class="value" id="totalSpent">0.00</div>
       </div>
       <div class="card topup">
         <div class="label">Added to wallet</div>
-        <div class="value" id="totalTopup">£0.00</div>
+        <div class="value" id="totalTopup">0.00</div>
       </div>
       <div class="card full">
         <span>Transactions parsed</span>
@@ -273,7 +273,7 @@ Wallet funding
 
   </div>
 
-  <p class="footnote">Purchases (plain amounts) count toward "Total spent." Amounts prefixed with + are treated as wallet top-ups or refunds and kept separate. £0.00 items are tagged free but excluded from totals either way.<br><br>This page has no analytics, no external scripts or fonts, and no fetch/network calls of any kind — a strict Content-Security-Policy enforces that at the browser level, not just by promise. Nothing you paste is saved once you close or refresh the tab.</p>
+  <p class="footnote">Purchases (plain amounts) count toward "Total spent." Amounts prefixed with + are treated as wallet top-ups or refunds and kept separate. 0.00 items are tagged free but excluded from totals either way.<br><br>This page has no analytics, no external scripts or fonts, and no fetch/network calls of any kind — a strict Content-Security-Policy enforces that at the browser level, not just by promise. Nothing you paste is saved once you close or refresh the tab.</p>
 
 </div>
 
@@ -288,20 +288,33 @@ function parseTransactions(text) {
     const description = m[3].trim();
 
     const isCredit = rawAmount.startsWith('+');
-    const numeric = parseFloat(rawAmount.replace(/[^0-9.]/g, '')) || 0;
+    const cleaned = rawAmount.replace(/^\+\s*/, '').replace(/[^0-9,.-]/g, '');
+    const lastComma = cleaned.lastIndexOf(',');
+    const lastDot = cleaned.lastIndexOf('.');
+    let normalized = cleaned;
+    if (lastComma !== -1 && lastDot !== -1) normalized = lastComma > lastDot ? cleaned.replace(/\./g, '').replace(',', '.') : cleaned.replace(/,/g, '');
+    else if (lastComma !== -1) normalized = (cleaned.length - lastComma - 1 <= 2) ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
+    else normalized = cleaned.replace(/,/g, '');
+    const numeric = parseFloat(normalized) || 0;
+    const currencyMatch = rawAmount.match(/(?:^|[+\s])([A-Za-z]{3})(?=\s*[-+]?\d)|([^\d\s+\-.,])(?=\s*[-+]?\d)|(?<=\d)\s*([^\d\s.,+\-]{1,4})/u);
+    const currency = currencyMatch ? (currencyMatch[1] || currencyMatch[2] || currencyMatch[3] || '') : '';
 
     let type = 'purchase';
     if (isCredit) type = 'credit';
     else if (numeric === 0) type = 'free';
 
-    out.push({ date, description, amount: numeric, isCredit, type, raw: rawAmount });
+    out.push({ date, description, amount: numeric, isCredit, type, raw: rawAmount, currency });
   }
   return out;
 }
 
-function fmt(n) {
-  return '£' + n.toFixed(2);
+function fmt(n, currency = '') {
+  const codeMap = {'£':'GBP','$':'USD','€':'EUR','¥':'JPY','₩':'KRW','₹':'INR','₽':'RUB','₺':'TRY','฿':'THB','₫':'VND','₴':'UAH','₪':'ILS','₦':'NGN','₱':'PHP','R$':'BRL','C$':'CAD','A$':'AUD','NZ$':'NZD','kr':'SEK'};
+  const code = codeMap[currency] || (currency.length === 3 ? currency.toUpperCase() : null);
+  if (code) { try { return new Intl.NumberFormat(undefined, {style:'currency', currency:code, minimumFractionDigits:2, maximumFractionDigits:2}).format(n); } catch (_) {} }
+  return `${currency ? currency + ' ' : ''}${n.toFixed(2)}`;
 }
+function getCurrency(txs) { const cs=[...new Set(txs.map(t=>t.currency).filter(Boolean))]; return cs.length===1 ? cs[0] : ''; }
 
 function parseDateForSort(d) {
   // expects DD/MM/YYYY
@@ -329,8 +342,9 @@ document.getElementById('calcBtn').addEventListener('click', () => {
   const totalSpent = purchases.reduce((s, t) => s + t.amount, 0);
   const totalTopup = credits.reduce((s, t) => s + t.amount, 0);
 
-  document.getElementById('totalSpent').textContent = fmt(totalSpent);
-  document.getElementById('totalTopup').textContent = fmt(totalTopup);
+  const currency = getCurrency(txs);
+  document.getElementById('totalSpent').textContent = fmt(totalSpent, currency);
+  document.getElementById('totalTopup').textContent = fmt(totalTopup, currency);
   document.getElementById('txCount').textContent = txs.length;
 
   // group by item (purchases only)
@@ -349,7 +363,7 @@ document.getElementById('calcBtn').addEventListener('click', () => {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="desc"><b>${escapeHtml(desc)}</b></td>
       <td class="num count">${g.count}</td>
-      <td class="amt">${fmt(g.total)}</td>`;
+      <td class="amt">${fmt(g.total, currency)}</td>`;
     itemsBody.appendChild(tr);
   });
 
