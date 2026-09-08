@@ -207,6 +207,8 @@
     td.amt::before{content:"Amount"; color:var(--ink-dim); font-family:var(--sans); font-size:11.5px;}
     .items-table td.desc::before{content:"Item";}
     .items-table td.count::before{content:"Times"; color:var(--ink-dim); font-family:var(--sans); font-size:11.5px;}
+    .games-table td.desc::before{content:"Game";}
+    .games-table td.count::before{content:"Items"; color:var(--ink-dim); font-family:var(--sans); font-size:11.5px;}
     td.desc{text-align:right;}
     td.desc b{text-align:right;}
     td.count{justify-content:space-between; display:flex;}
@@ -265,6 +267,13 @@ Wallet funding
     </table>
     <div class="empty" id="itemsEmpty" style="display:none;">No purchases found.</div>
 
+    <div class="section-title">By game</div>
+    <table class="items-table games-table" id="gamesTable">
+      <thead><tr><th>Game</th><th class="num">Items</th><th class="num">Spent</th></tr></thead>
+      <tbody id="gamesBody"></tbody>
+    </table>
+    <div class="empty" id="gamesEmpty" style="display:none;">No purchases found.</div>
+
     <div class="section-title">All transactions</div>
     <table>
       <thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th></tr></thead>
@@ -273,7 +282,7 @@ Wallet funding
 
   </div>
 
-  <p class="footnote">Purchases (plain amounts) count toward "Total spent." Amounts prefixed with + are treated as wallet top-ups or refunds and kept separate. 0.00 items are tagged free but excluded from totals either way.<br><br>This page has no analytics, no external scripts or fonts, and no fetch/network calls of any kind — a strict Content-Security-Policy enforces that at the browser level, not just by promise. Nothing you paste is saved once you close or refresh the tab.</p>
+  <p class="footnote">Purchases (plain amounts) count toward "Total spent." Amounts prefixed with + are treated as wallet top-ups or refunds and kept separate. 0.00 items are tagged free but excluded from totals either way. "By game" groups purchases by the game title inferred from each description — known in-game currencies (Robux, V-Bucks, FIFA/FC Points, etc.) map to their game regardless of the amount, and similarly-named entries ("Rust" / "Rust Console Edition") are merged together — but it's still a best guess, not a verified match.<br><br>This page has no analytics, no external scripts or fonts, and no fetch/network calls of any kind — a strict Content-Security-Policy enforces that at the browser level, not just by promise. Nothing you paste is saved once you close or refresh the tab.</p>
 
 </div>
 
@@ -315,6 +324,74 @@ function fmt(n, currency = '') {
   return `${currency ? currency + ' ' : ''}${n.toFixed(2)}`;
 }
 function getCurrency(txs) { const cs=[...new Set(txs.map(t=>t.currency).filter(Boolean))]; return cs.length===1 ? cs[0] : ''; }
+
+// Common in-game currencies that ship under wildly different-looking line
+// items ("800 Robux", "1,000 Robux", "2,200 Robux for Roblox"...) but all
+// belong to one game. Keyed lowercase; matched as a whole word/phrase.
+const CURRENCY_ALIASES = {
+  'v-bucks': 'Fortnite',
+  'vbucks': 'Fortnite',
+  'robux': 'Roblox',
+  'fifa points': 'FIFA / EA Sports FC',
+  'fc points': 'FIFA / EA Sports FC',
+  'cod points': 'Call of Duty',
+  'apex coins': 'Apex Legends',
+  'minecoins': 'Minecraft',
+  'uc': 'PUBG',
+  'riot points': 'League of Legends',
+  'valorant points': 'Valorant',
+  'rocket league credits': 'Rocket League',
+};
+const CURRENCY_RE = new RegExp('\\b(' +
+  Object.keys(CURRENCY_ALIASES).sort((a, b) => b.length - a.length)
+    .map(k => k.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|') +
+  ')\\b', 'i');
+
+function extractGame(description) {
+  let g = description;
+  // strip platform tags like (PS4), [PS5], trademark symbols
+  g = g.replace(/[\(\[]\s*(PS4|PS5|PlayStation\s?4|PlayStation\s?5|PS VR2?)\s*[\)\]]/gi, ' ');
+  g = g.replace(/[™®]/g, '');
+  g = g.replace(/\s{2,}/g, ' ').trim();
+
+  // Fold generic subscription/service lines into one bucket instead of
+  // treating every plan length as a different "game".
+  if (/^playstation\s?plus/i.test(g)) return 'PlayStation Plus';
+  if (/^playstation\s?now/i.test(g)) return 'PlayStation Now';
+
+  // In-game currency top-ups: prefer an explicit "... for <Game>" tail if
+  // present, otherwise fall back to the currency's known game.
+  const curMatch = g.match(CURRENCY_RE);
+  if (curMatch) {
+    const forMatch = g.match(/\bfor\s+([A-Za-z0-9''":,.\- ]+?)\s*$/i);
+    if (forMatch && forMatch[1].trim()) return forMatch[1].trim();
+    return CURRENCY_ALIASES[curMatch[1].toLowerCase()];
+  }
+
+  // PlayStation Store descriptions are usually "Game Title - Item/DLC name"
+  // or "Game Title: Item name". Take the part before the first separator.
+  const parts = g.split(/\s+-\s+|\s+–\s+|\s+—\s+|:\s+/);
+  return (parts[0] || g).trim() || description;
+}
+
+// Merge raw game names that are word-for-word prefixes of a longer one
+// ("Rust" + "Rust Console Edition Deluxe" -> both become "Rust"), so
+// inconsistent listing formats for the same game still collapse together.
+function clusterGameNames(rawNames) {
+  const tokenize = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+  const unique = [...new Set(rawNames)];
+  const sorted = [...unique].sort((a, b) => tokenize(a).length - tokenize(b).length || a.length - b.length);
+  const buckets = []; // { canonical, tokens }
+  const canonicalFor = new Map();
+  sorted.forEach(raw => {
+    const toks = tokenize(raw);
+    const bucket = buckets.find(b => b.tokens.length > 0 && b.tokens.length <= toks.length &&
+      b.tokens.every((t, i) => t === toks[i]));
+    if (bucket) canonicalFor.set(raw, bucket.canonical);
+    else { buckets.push({ canonical: raw, tokens: toks }); canonicalFor.set(raw, raw); }
+  });
+  return canonicalFor;
+}
 
 function parseDateForSort(d) {
   // expects DD/MM/YYYY
@@ -365,6 +442,31 @@ document.getElementById('calcBtn').addEventListener('click', () => {
       <td class="num count">${g.count}</td>
       <td class="amt">${fmt(g.total, currency)}</td>`;
     itemsBody.appendChild(tr);
+  });
+
+  // group by game (purchases only, item names bucketed by inferred title,
+  // then fuzzy-clustered so inconsistent formats for the same game merge)
+  const gameGroups = {};
+  const rawGameNames = purchases.map(t => extractGame(t.description));
+  const canonicalGame = clusterGameNames(rawGameNames);
+  purchases.forEach((t, i) => {
+    const game = canonicalGame.get(rawGameNames[i]) || rawGameNames[i];
+    if (!gameGroups[game]) gameGroups[game] = { items: new Set(), times: 0, total: 0 };
+    gameGroups[game].items.add(t.description);
+    gameGroups[game].times += 1;
+    gameGroups[game].total += t.amount;
+  });
+  const gameRows = Object.entries(gameGroups).sort((a, b) => b[1].total - a[1].total);
+
+  const gamesBody = document.getElementById('gamesBody');
+  gamesBody.innerHTML = '';
+  document.getElementById('gamesEmpty').style.display = gameRows.length ? 'none' : 'block';
+  gameRows.forEach(([game, g]) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="desc"><b>${escapeHtml(game)}</b></td>
+      <td class="num count">${g.items.size}</td>
+      <td class="amt">${fmt(g.total, currency)}</td>`;
+    gamesBody.appendChild(tr);
   });
 
   // all transactions, most recent first
